@@ -1,0 +1,136 @@
+This file collects various notes and thoughts related to the
+development of this code.  Some of them might be helpful to explain
+why certain things are the way they are -- so that future changes can
+take those into account.
+
+
+# October 2020
+
+## Avoiding buffering events on behalf of the client
+
+One API goal I had from the beginning was to avoid having the API
+accumulate an unbounded queue of events for the user.  Instead is up
+to the user consume this data.  This make clearer what is coming from
+the network.
+
+One practical effect of this is the Events() channel needs to be
+consumed, for any other response from the ship to be observed.  (See
+also point below).
+
+Another effect is that making a "per subscription channel" would end
+up being error prone: when sharing the same Eyre channel (the HTTP GET
+request) the events for all the subscriptions will be mixed, so
+reading from only one could be stalled because there's another waiting
+to be read.  To avoid the stall we would need keep a queue for each
+subscription, which is what we want to avoid.  This "demultiplexing"
+is reasonably easy to do on the client side: if it needs one, it does
+likely already have a map from subscription to something, so it is
+easy to add an extra channel there for each one.
+
+
+## Eyre channel POST/PUT results mixed with subscription updates
+
+I've opted to use a single Eyre channel (and HTTP GET request
+streaming) to collect the result of subscriptions and POST/PUT
+results.  This has a "bad" side-effect: we only know the POST/PUT
+operations if we consume the results of all subscriptions.
+
+An alternative would be to use separate Eyre channel for POST/PUT and
+subscriptions.  That could clean things up at expense of an extra
+connection.  In practice clients are expected to handle Events()
+anyway, so this seems a wart we can live with.
+
+Taking this alternative to the extreme, we could create a connection
+per-subscription.  This would make waiting on each subscription
+independent, at the cost of connection per subscription.  For now we
+are betting on the simpler solution.
+
+
+## "ID" name overloaded
+
+SSE (Event) IDs: which are part of the SSE protocol, to identify each
+event in the context of the protocol.  SSE doesn't require IDs to be
+sequential, but in Urbit they are used this way (to allow ACK below).
+
+The JSON messages have IDs as well, but those identify messages for
+the remaining of Urbit.  A POKE is given a certain ID, and then later
+we can read in the relevant Eyre channel a response with that ID.  The
+response might have a different
+
+NOTE: ACK JSON messages have a field to refer to the SSE (Event) ID
+"event-id".
+
+
+## flagconfig
+
+- Allow having a configuration file (via the --config), so the
+  examples can be used in a less trivial setting: you can have a
+  config file with your --addr and --code, and reuse for all sorts of
+  things filling the rest with command line.
+
+- Don't really need configuration file to be special in any way, so just
+  using regular flag syntax seemed OK.
+
+- These match the ideas in https://github.com/peterbourgon/ff but I
+  wanted to avoid the extra dependency for the examples.  Maybe I'll just
+  revisit it once I get more familiar with ff.
+
+- Side note: I've also avoided positional arguments as an experiment
+  too, this make the command lines and configuration files more
+  explicit.
+
+
+## Examples
+
+Examples were chosen to illustrate different ways to use the API.
+They (partially) motivated various decisions:
+
+- Wanting the convenience of calling Wait() on a request result.
+- Being able to dispatch many requests in one go DoMany().
+- Having an internal processEvents() goroutine.
+
+
+## "chat" package
+
+After writing a few examples that communicated with the Chat "apps" in
+Urbit, I was repeating a lot of struct definitions and deserialization
+and serialization functions among them, so moved this to a common
+package.  I think these extra packages are very helpful.  Just having
+this types around help understanding the messages being sent and
+received a bit more.
+
+I've seen discussion on providing even more high-level APIs,
+e.g. "send a chat message", but I'm still skeptical and think the
+right way is provide those lower level helpers (how to construct a
+request), and build more applications and examples on top of it, and
+THEN extract out these higher level abstractions.
+
+
+## The Chat GUI example
+
+This example is an "incomplete" client, but felt it was worth
+including for two reasons:
+
+- A more interactive application that used Urbit -- so different usage
+  patterns than the other examples
+  
+- Provide a starting point for a multiplataform (multi-mobile) chat
+  client.  I hope people interested in Android are able to pick this
+  as a starting point to take it further.
+
+I also was a bit curious about "Immediate Mode" style used by gioui,
+so took the opportunity to learn a bit about.
+
+
+## Graph-store
+
+While these examples were written, there was work being done to unify
+the stores for various apps (including chat) into a single
+graph-store.  This hasn't changed (yet) for chat, but might mean the
+examples would have to be updated, I'll keep an eye on that to make
+sure those get updated when chat apps transition.
+
+One good outcome is that the examples provides three new "consumers"
+of the chat-store (et al) with different patterns that could be
+helpful when evaluating the new implementation of chat on top of
+graph-store.
