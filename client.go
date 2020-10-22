@@ -102,7 +102,7 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 
 	// TODO: Get this in a non-JS format so we don't need to tear
 	// it apart.
-	snippet, err := c.Get("/~landscape/js/session.js")
+	snippet, err := c.Get("/~landscape/js/session.js", "")
 	if err != nil {
 		return nil, fmt.Errorf("couldn't find ship name: %w", err)
 	}
@@ -152,10 +152,7 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 	return c, nil
 }
 
-func (c *Client) Get(path string) ([]byte, error) {
-	// TODO: Needs a way to set the content-type.  Maybe also have
-	// a GetJSON method.
-
+func (c *Client) Get(path, contentType string) ([]byte, error) {
 	// TODO: Consider a streaming version that returns an
 	// io.ReadCloser.
 
@@ -163,9 +160,18 @@ func (c *Client) Get(path string) ([]byte, error) {
 		fmt.Fprintf(os.Stderr, "GET: %s\n", path)
 	}
 
-	resp, err := c.h.Get(c.addr + path)
+	req, err := http.NewRequest(http.MethodGet, c.addr+path, nil)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't get: %w", err)
+		return nil, err
+	}
+
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+
+	resp, err := c.h.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't get %s: %w", path, err)
 	}
 	defer resp.Body.Close()
 
@@ -176,8 +182,12 @@ func (c *Client) Get(path string) ([]byte, error) {
 	return ioutil.ReadAll(resp.Body)
 }
 
+func (c *Client) GetJSON(path string) ([]byte, error) {
+	return c.Get(path, "application/json")
+}
+
 func (c *Client) Scry(app, path string) ([]byte, error) {
-	return c.Get("/~/scry/" + app + path + ".json")
+	return c.GetJSON("/~/scry/" + app + path + ".json")
 }
 
 type Event struct {

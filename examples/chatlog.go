@@ -281,7 +281,7 @@ keysLoop:
 		if backlog < count {
 			count = backlog
 		}
-		data, err := ship.Get(fmt.Sprintf("/chat-view/paginate/%d/%d%s", backlog-count, backlog, path))
+		data, err := ship.GetJSON(fmt.Sprintf("/chat-view/paginate/%d/%d%s", backlog-count, backlog, path))
 		if err != nil {
 			return err
 		}
