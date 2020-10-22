@@ -454,7 +454,9 @@ func (c *Client) DoMany(reqs []*Request) []Result {
 	return results
 }
 
-// TODO: Document that acker exists to coalesce ACKs.
+// acker runs in a goroutine and coalesces the ACK messages so that
+// when Client receives a series of messages in a short amount of
+// time, only a single ACK for the latest ID is sent.
 func (c *Client) acker() {
 	var lastAckID []byte
 	var pendingAckID []byte
