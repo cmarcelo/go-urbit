@@ -4,6 +4,8 @@ package urbit
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -69,7 +71,12 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 		pending: make(map[uint64]chan error),
 	}
 
-	c.channel = fmt.Sprintf("/~/channel/%d-%p-go", time.Now().Unix(), c)
+	randomID := make([]byte, 6)
+	_, err := rand.Read(randomID)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't create random channel ID for ship: %w", err)
+	}
+	c.channel = fmt.Sprintf("/~/channel/%d-%s-go", time.Now().Unix(), hex.EncodeToString(randomID))
 
 	if opts != nil {
 		c.trace = opts.Trace
