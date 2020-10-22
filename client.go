@@ -235,8 +235,7 @@ func (c *Client) processEvents() {
 		}
 
 		switch ev.Type {
-		case "poke":
-		case "subscribe":
+		case "poke", "subscribe":
 			c.mu.Lock()
 			ch, exists := c.pending[ev.ID]
 			if exists {
