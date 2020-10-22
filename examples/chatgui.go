@@ -353,10 +353,12 @@ func (a *App) sendText(path, text string) {
 	// Create a new Envelope, note a new UID is generated.  This
 	// will be used later to match a pending message with an
 	// actual one received from the chat owner.
+	uid, _ := chat.GenerateUID()
+
 	m := chat.Message{
 		Path: path,
 		Envelope: chat.Envelope{
-			UID:    chat.GenerateUID(),
+			UID:    uid,
 			Author: "~" + a.ship.Name(),
 			When:   float64(time.Now().UnixNano() / 1_000_000),
 			Letter: chat.Letter{

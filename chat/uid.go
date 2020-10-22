@@ -4,27 +4,35 @@ package chat
 
 import (
 	"bytes"
+	"encoding/base32"
 	"math/rand"
-	"strconv"
 )
 
 // GenerateUID generates an unique identifer suitable to be used by a
-// chat Envelope.  It uses the default math/rand generator so its up
-// to the caller to seed it with rand.Seed().
-//
-// TODO: Take some parameter from rand package instead of relying on
-// the global generator.  Or have both options.
-func GenerateUID() string {
+// chat Envelope.  The UID is 128-bit number represented in base32,
+// with a dot character separating each 5 digits, prefixed with 0v.
+// For example: "0v5.acis6.788ro.bljvu.prn7k.22d4q".
+func GenerateUID() (string, error) {
+	b := make([]byte, 20)
+	_, err := rand.Read(b[4:])
+	if err != nil {
+		return "", err
+	}
+
+	uid := make([]byte, 32)
+	base32.HexEncoding.Encode(uid, b)
+	uid = bytes.ToLower(uid)
+	uid = uid[6:]
+
 	buf := bytes.Buffer{}
-	buf.WriteString("0v")
-	buf.WriteString(strconv.FormatUint(uint64(rand.Intn(7)+1), 10))
+	buf.Write([]byte("0v"))
+	buf.WriteByte(uid[0])
+	uid = uid[1:]
 	for i := 0; i < 5; i++ {
 		buf.WriteByte('.')
-		s := strconv.FormatUint(uint64(rand.Intn(1<<25)), 32)
-		for j := len(s); j < 5; j++ {
-			buf.WriteByte('0')
-		}
-		buf.WriteString(s)
+		buf.Write(uid[:5])
+		uid = uid[5:]
 	}
-	return buf.String()
+
+	return buf.String(), nil
 }

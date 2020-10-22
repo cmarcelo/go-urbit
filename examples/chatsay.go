@@ -197,10 +197,14 @@ func mainErr() error {
 	}
 
 	// Construct a Message to send.
+	uid, err := chat.GenerateUID()
+	if err != nil {
+		return err
+	}
 	m := chat.Message{
 		Path: path,
 		Envelope: chat.Envelope{
-			UID:    chat.GenerateUID(),
+			UID:    uid,
 			Author: "~" + ship.Name(),
 			When:   float64(time.Now().UnixNano() / 1_000_000),
 			Letter: chat.Letter{
