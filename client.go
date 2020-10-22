@@ -279,6 +279,8 @@ func (c *Client) processEvents() {
 		c.ackerCh <- c.sse.LastEventID
 	}
 
+	close(c.events)
+
 	// TODO: Reconnect.  Handling non-closing failure (we want to notify client).
 
 	c.streamDone <- struct{}{}
