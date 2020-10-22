@@ -366,6 +366,14 @@ func (c *Client) DoMany(reqs []*Request) []Result {
 	results := make([]Result, len(reqs))
 	lastID := atomic.AddUint64(&c.nextID, uint64(len(reqs)))
 
+	type requestWithID struct {
+		*Request
+		ID uint64     `json:"id"`
+		Ch chan error `json:"-"`
+	}
+
+	reqsWithID := make([]requestWithID, len(reqs))
+
 	for i, req := range reqs {
 		id := lastID - uint64(i)
 		hasResponse := req.Action == ActionPoke || req.Action == ActionSubscribe
@@ -383,27 +391,22 @@ func (c *Client) DoMany(reqs []*Request) []Result {
 			c.mu.Unlock()
 		}
 
-		type requestWithID struct {
-			*Request
-			ID uint64 `json:"id"`
-		}
+		reqsWithID[i] = requestWithID{req, id, ch}
+	}
 
-		x := requestWithID{req, id}
-
-		data, err := json.Marshal([]requestWithID{x})
-		if err != nil {
-			if hasResponse {
-				c.mu.Lock()
-				delete(c.pending, id)
-				c.mu.Unlock()
-			}
+	data, err := json.Marshal(reqsWithID)
+	if err != nil {
+		c.mu.Lock()
+		for i, req := range reqsWithID {
+			delete(c.pending, req.ID)
 			results[i].Err = err
-			continue
 		}
+		c.mu.Unlock()
+		return results
+	}
 
-		buf := bytes.NewBuffer(data)
-
-		if c.trace {
+	if c.trace {
+		for _, req := range reqsWithID {
 			var details string
 			switch req.Action {
 			case ActionPoke:
@@ -415,22 +418,25 @@ func (c *Client) DoMany(reqs []*Request) []Result {
 				details = fmt.Sprintf("subscription=%d", req.Subscription)
 			}
 
-			fmt.Fprintf(os.Stderr, "SEND: %d %s %s\n", id, req.Action, details)
+			fmt.Fprintf(os.Stderr, "SEND: %d %s %s\n", req.ID, req.Action, details)
 		}
+	}
 
-		err = c.putJSON(buf)
-		if err != nil {
-			if hasResponse {
-				c.mu.Lock()
-				delete(c.pending, id)
-				c.mu.Unlock()
-			}
+	buf := bytes.NewBuffer(data)
+	err = c.putJSON(buf)
+	if err != nil {
+		c.mu.Lock()
+		for i, req := range reqsWithID {
+			delete(c.pending, req.ID)
 			results[i].Err = err
-			continue
 		}
+		c.mu.Unlock()
+		return results
+	}
 
-		results[i].ID = id
-		results[i].Response = ch
+	for i, req := range reqsWithID {
+		results[i].ID = req.ID
+		results[i].Response = req.Ch
 	}
 
 	return results
