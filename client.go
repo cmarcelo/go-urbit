@@ -279,7 +279,9 @@ func (c *Client) processEvents() {
 			// No book-keeping needed, will just pass to the channel.
 
 		case "quit":
-			// TODO: Close subscription channel?  Reconnect in this case too?
+			// TODO: Retry subscribe if this was
+			// unexpected. Add some kind of limit or
+			// backoff mechanism.
 
 		default:
 			c.dispatchError(fmt.Errorf("unknown response=%s for id=%d", ev.Type, ev.ID))
@@ -452,6 +454,7 @@ func (c *Client) DoMany(reqs []*Request) []Result {
 	return results
 }
 
+// TODO: Document that acker exists to coalesce ACKs.
 func (c *Client) acker() {
 	var lastAckID []byte
 	var pendingAckID []byte
