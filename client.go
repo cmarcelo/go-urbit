@@ -96,7 +96,7 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != 200 && resp.StatusCode != 204 {
 		return nil, fmt.Errorf("failed status when dialing ship: %s", resp.Status)
 	}
 
@@ -137,7 +137,7 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 		return nil, fmt.Errorf("couldn't open a channel in ship: %w", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != 200 && resp.StatusCode != 204 {
 		return nil, fmt.Errorf("failed status when opening a channel in ship: %s", resp.Status)
 	}
 
@@ -175,7 +175,7 @@ func (c *Client) Get(path, contentType string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != 200 && resp.StatusCode != 204 {
 		return nil, fmt.Errorf("failed status when getting: %s", resp.Status)
 	}
 
@@ -526,7 +526,7 @@ func (c *Client) putJSON(body io.Reader) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != 200 && resp.StatusCode != 204 {
 		return fmt.Errorf("failed status when calling put: %s", resp.Status)
 	}
 
@@ -620,7 +620,7 @@ func (c *Client) postForm(path string, data url.Values) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != 200 && resp.StatusCode != 204 {
 		return fmt.Errorf("failed status when POST: %s", resp.Status)
 	}
 
