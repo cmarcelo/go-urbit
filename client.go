@@ -361,7 +361,26 @@ func (c *Client) processEvent(sse *sseReader) {
 		// No book-keeping needed, will just pass to the channel.
 
 	case "quit":
-		// TODO: Retry subscribe if this was unexpected.
+		c.mu.Lock()
+		s, ok := c.subscriptions[ev.ID]
+		c.mu.Unlock()
+
+		if ok {
+			req := &Request{
+				Action:     ActionSubscribe,
+				Ship:       s.ship,
+				App:        s.app,
+				Path:       s.path,
+				overrideID: ev.ID,
+			}
+			result := c.Do(req)
+			if result.Err != nil {
+				c.dispatchError(fmt.Errorf("failed to re-subscribe id=%d", ev.ID), nil)
+				// TODO: Should this also send a "subscribe" with Err to c.events?
+			}
+		} else {
+			c.dispatchError(fmt.Errorf("quit for unknown subscription id=%d", ev.ID), nil)
+		}
 
 	default:
 		c.dispatchError(fmt.Errorf("unknown response=%s for id=%d", ev.Type, ev.ID), append([]byte(nil), sse.Data...))
@@ -395,10 +414,14 @@ type Request struct {
 
 	// Unsubscribe only.
 	Subscription uint64 `json:"subscription,omitempty"`
+
+	// Used by automatic re-subscriptions to avoid allocating a
+	// a new ID.
+	overrideID uint64
 }
 
 // TODO: Should we allow a private id to be assigned (so we can have
-// it before blocking)?
+// it before blocking)?  See also overrideID.
 
 type Result struct {
 	ID       uint64
@@ -439,7 +462,8 @@ func (c *Client) PokeShip(ship, app string, data json.RawMessage) Result {
 }
 
 func (c *Client) getNextID() uint64 {
-	// TODO: Comment on the usefulness of ids starting with non-zero.
+	// For the client, valid IDs will start from 1, zero means a
+	// new ID will be allocated.  See overrideID.
 	return atomic.AddUint64(&c.nextID, 1)
 }
 
@@ -449,7 +473,6 @@ func (c *Client) Do(req *Request) Result {
 
 func (c *Client) DoMany(reqs []*Request) []Result {
 	results := make([]Result, len(reqs))
-	lastID := atomic.AddUint64(&c.nextID, uint64(len(reqs)))
 
 	type requestWithID struct {
 		*Request
@@ -460,7 +483,13 @@ func (c *Client) DoMany(reqs []*Request) []Result {
 	reqsWithID := make([]requestWithID, len(reqs))
 
 	for i, req := range reqs {
-		id := lastID - uint64(i)
+		var id uint64
+		if req.overrideID == 0 {
+			id = c.getNextID()
+		} else {
+			id = req.overrideID
+		}
+
 		hasResponse := req.Action == ActionPoke || req.Action == ActionSubscribe
 		var ch chan error
 		if hasResponse {
