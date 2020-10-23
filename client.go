@@ -365,7 +365,6 @@ func (c *Client) processEvent(sse *sseReader) {
 
 	default:
 		c.dispatchError(fmt.Errorf("unknown response=%s for id=%d", ev.Type, ev.ID), append([]byte(nil), sse.Data...))
-		return
 	}
 
 	c.events <- &ev
