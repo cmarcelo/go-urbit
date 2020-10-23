@@ -34,10 +34,9 @@ type Client struct {
 
 	name string
 
-	sse        *sseReader
-	stream     io.Closer
-	streamDone chan struct{}
-	events     chan *Event
+	events       chan *Event
+	stream       io.Closer
+	listenerDone chan struct{}
 
 	ackerCh   chan []byte
 	ackerDone chan struct{}
@@ -46,6 +45,7 @@ type Client struct {
 	pending map[uint64]chan error
 
 	closeOnce sync.Once
+	close     chan struct{}
 }
 
 func (c *Client) Name() string {
@@ -62,13 +62,15 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 		addr: addr,
 		code: code,
 
-		streamDone: make(chan struct{}),
-		events:     make(chan *Event),
+		listenerDone: make(chan struct{}),
+		events:       make(chan *Event),
 
 		ackerCh:   make(chan []byte),
 		ackerDone: make(chan struct{}),
 
 		pending: make(map[uint64]chan error),
+
+		close: make(chan struct{}, 1),
 	}
 
 	randomID := make([]byte, 6)
@@ -88,16 +90,9 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 		c.h = &http.Client{Jar: cookieJar}
 	}
 
-	data := url.Values{"password": {c.code}}
-	resp, err := c.h.PostForm(addr+"/~/login", data)
-
+	err = c.login()
 	if err != nil {
-		return nil, fmt.Errorf("couldn't dial ship: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 && resp.StatusCode != 204 {
-		return nil, fmt.Errorf("failed status when dialing ship: %s", resp.Status)
+		return nil, err
 	}
 
 	// TODO: Get this in a non-JS format so we don't need to tear
@@ -112,6 +107,29 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 	}
 	c.name = parts[1]
 
+	go c.listener()
+	go c.acker()
+
+	return c, nil
+}
+
+func (c *Client) login() error {
+	data := url.Values{"password": {c.code}}
+	resp, err := c.h.PostForm(c.addr+"/~/login", data)
+
+	if err != nil {
+		return fmt.Errorf("couldn't dial ship: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 && resp.StatusCode != 204 {
+		return fmt.Errorf("failed status when dialing ship: %s", resp.Status)
+	}
+
+	return nil
+}
+
+func (c *Client) openStream() (io.ReadCloser, error) {
 	// Currently Eyre needs a new POST/PUT request to happen in an
 	// (Eyre) channel before the client can GET to follow the
 	// stream of responses.  This forces the client to delay
@@ -132,7 +150,7 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 	}
 	req.Header.Set("Content-Type", "text/event-stream")
 
-	resp, err = c.h.Do(req)
+	resp, err := c.h.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't open a channel in ship: %w", err)
 	}
@@ -141,15 +159,7 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 		return nil, fmt.Errorf("failed status when opening a channel in ship: %s", resp.Status)
 	}
 
-	// NOTE: Eyre generates Server-Sent Events, but it doesn't use
-	// "event" or "retry" fields.
-	c.sse = newSSEReader(resp.Body)
-	c.stream = resp.Body
-
-	go c.processEvents()
-	go c.acker()
-
-	return c, nil
+	return resp.Body, nil
 }
 
 func (c *Client) Get(path, contentType string) ([]byte, error) {
@@ -224,80 +234,134 @@ func truncate(s string, size int) string {
 	return fmt.Sprintf("%s...", s[:size])
 }
 
-func (c *Client) processEvents() {
-	for c.sse.Next() {
-		var ev Event
-		err := json.Unmarshal(c.sse.Data, &ev)
-
-		// TODO: Move this comment.
-
-		// sseReader will reuse internal buffers, so copy the
-		// buffer contents when creating the error event before
-		// continuing to process the input.
-
-		if err != nil {
-			c.dispatchError(err, append([]byte(nil), c.sse.Data...))
-			continue
+func (c *Client) listener() {
+loop:
+	for {
+		select {
+		case <-c.close:
+			break loop
+		default:
+			// Continue.
 		}
+
+		var sse *sseReader
+
+		stream, err := c.openStream()
+		if err != nil {
+			// TODO: Identify the case where re-login is needed.
+			c.dispatchError(fmt.Errorf("failed to open stream: %w\n", err), nil)
+			goto retry
+		}
+
+		sse = newSSEReader(stream)
+		c.stream = stream
+
+		for sse.Next() {
+			c.processEvent(sse)
+		}
+
+		select {
+		case <-c.close:
+			break loop
+		default:
+			// Continue.
+		}
+
+	retry:
+		// TODO: Implement a limit and back-off strategy to retries.
+
+		// TODO: Could we just notify the client via an Event
+		// and let it control whether/when to retry?
 
 		if c.trace {
-			var okStatus string
-			if ev.Ok != nil {
-				okStatus = fmt.Sprintf(" ok=%q", *ev.Ok)
-			}
-			var errStatus string
-			if ev.Err != nil {
-				errStatus = fmt.Sprintf(" err=%q", *ev.Err)
-			}
-			data := truncate(string(ev.Data), 256)
-			fmt.Fprintf(os.Stderr, "RECV: %d <%s> %s%s%s data=%s (%d bytes)\n", ev.ID, string(c.sse.LastEventID), ev.Type, okStatus, errStatus, data, len(ev.Data))
+			fmt.Fprintf(os.Stderr, "INFO: waiting to retry opening stream\n")
 		}
 
-		switch ev.Type {
-		case "poke", "subscribe":
-			c.mu.Lock()
-			ch, exists := c.pending[ev.ID]
-			if exists {
-				delete(c.pending, ev.ID)
-			}
-			c.mu.Unlock()
-
-			if !exists {
-				c.dispatchError(fmt.Errorf("response for unknown request with action=%s id=%s", ev.Type, string(c.sse.LastEventID)), append([]byte(nil), c.sse.Data...))
-				continue
-			}
-
-			var responseErr error
-			if ev.Ok != nil {
-				responseErr = nil
-			} else if ev.Err != nil {
-				responseErr = fmt.Errorf("response=%s id=%d failed: %s", ev.Type, ev.ID, *ev.Err)
-			} else {
-				responseErr = fmt.Errorf("response=%s id=%d had invalid response", ev.Type, ev.ID)
-			}
-			ch <- responseErr
-
-		case "diff":
-			// No book-keeping needed, will just pass to the channel.
-
-		case "quit":
-			// TODO: Retry subscribe if this was
-			// unexpected. Add some kind of limit or
-			// backoff mechanism.
-
-		default:
-			c.dispatchError(fmt.Errorf("unknown response=%s for id=%d", ev.Type, ev.ID), append([]byte(nil), c.sse.Data...))
+		retryTimer := time.NewTimer(5 * time.Second)
+		select {
+		case <-c.close:
+			break loop
+		case <-retryTimer.C:
+			// Continue.
 		}
+	}
 
-		c.events <- &ev
-		c.ackerCh <- c.sse.LastEventID
+	if c.trace {
+		fmt.Fprintf(os.Stderr, "CLOSING: listener shutting down\n")
 	}
 
 	close(c.events)
 
-	// TODO: Reconnect.  Handling non-closing failure (we want to notify client).
+	c.listenerDone <- struct{}{}
+}
 
-	c.streamDone <- struct{}{}
+func (c *Client) processEvent(sse *sseReader) {
+	// sseReader will reuse internal buffers, so when dispatching
+	// errors, copy the buffer contents so that it doesn't get
+	// overriden.  This isn't an issue for the successful code
+	// path because the result of unmarshalling won't reuse that
+	// buffer.
+
+	var ev Event
+	err := json.Unmarshal(sse.Data, &ev)
+	if err != nil {
+		c.dispatchError(err, append([]byte(nil), sse.Data...))
+		return
+	}
+
+	if c.trace {
+		var okStatus string
+		if ev.Ok != nil {
+			okStatus = fmt.Sprintf(" ok=%q", *ev.Ok)
+		}
+		var errStatus string
+		if ev.Err != nil {
+			errStatus = fmt.Sprintf(" err=%q", *ev.Err)
+		}
+		data := truncate(string(ev.Data), 256)
+		fmt.Fprintf(os.Stderr, "RECV: %d <%s> %s%s%s data=%s (%d bytes)\n", ev.ID, string(sse.LastEventID), ev.Type, okStatus, errStatus, data, len(ev.Data))
+	}
+
+	// NOTE: Eyre generates Server-Sent Events, but it doesn't use
+	// "event" or "retry" fields.
+
+	switch ev.Type {
+	case "poke", "subscribe":
+		c.mu.Lock()
+		ch, exists := c.pending[ev.ID]
+		if exists {
+			delete(c.pending, ev.ID)
+		}
+		c.mu.Unlock()
+
+		if !exists {
+			c.dispatchError(fmt.Errorf("response for unknown request with action=%s id=%s", ev.Type, string(sse.LastEventID)), append([]byte(nil), sse.Data...))
+			return
+		}
+
+		var responseErr error
+		if ev.Ok != nil {
+			responseErr = nil
+		} else if ev.Err != nil {
+			responseErr = fmt.Errorf("response=%s id=%d failed: %s", ev.Type, ev.ID, *ev.Err)
+		} else {
+			responseErr = fmt.Errorf("response=%s id=%d had invalid response", ev.Type, ev.ID)
+		}
+		ch <- responseErr
+
+	case "diff":
+		// No book-keeping needed, will just pass to the channel.
+
+	case "quit":
+		// TODO: Retry subscribe if this was unexpected.
+
+	default:
+		c.dispatchError(fmt.Errorf("unknown response=%s for id=%d", ev.Type, ev.ID), append([]byte(nil), sse.Data...))
+		return
+	}
+
+	c.events <- &ev
+	c.ackerCh <- sse.LastEventID
 }
 
 const (
@@ -494,6 +558,10 @@ loop:
 	}
 
 	c.ackerDone <- struct{}{}
+
+	if c.trace {
+		fmt.Fprintf(os.Stderr, "CLOSING: acker shutting down\n")
+	}
 }
 
 func (c *Client) ack(eventID []byte) {
@@ -582,13 +650,31 @@ func (c *Client) Close() error {
 			fmt.Fprintf(os.Stderr, "CLOSING: ~%s\n", c.Name())
 		}
 
-		// TODO: Document close procedures.
-		c.stream.Close()
+		// Mark that the user asked to Close. This is a value
+		// in a channel and not a boolean so that if listener
+		// goroutine is waiting for a retry, it can also catch
+		// it.
+		c.close <- struct{}{}
 
-		// TODO: Use a dry loop.
-		<-c.events
-		<-c.streamDone
+		// Close the current stream. This will make the SSE
+		// Reader loop stop.
+		if c.stream != nil {
+			// TODO: Possible race condition here.
+			c.stream.Close()
+		}
 
+		// Consume any pending events. If listener is stuck
+		// trying to send an event, this will make sure it
+		// make progress and catch up with the closing
+		// procedure.
+		for range c.events {
+			// Nothing.
+		}
+
+		// Wait for listener to finish.
+		<-c.listenerDone
+
+		// Tell acker goroutine to shutdown.
 		c.ackerCh <- nil
 		<-c.ackerDone
 
@@ -605,7 +691,7 @@ func (c *Client) Close() error {
 			}
 		}
 
-		err = nil
+		// TODO: Set some state so that Do and friends also stop working?
 	})
 
 	return err
