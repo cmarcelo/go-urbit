@@ -21,6 +21,7 @@ import (
 	"time"
 )
 
+// Client represents a connection with an Urbit ship.
 type Client struct {
 	h *http.Client
 
@@ -53,15 +54,26 @@ type subscription struct {
 	ship, app, path string
 }
 
+// Name returns the name of the ship a Client is connected to.
 func (c *Client) Name() string {
 	return c.name
 }
 
+// DialOptions include various options
 type DialOptions struct {
-	Trace      bool
+	// Trace indicated whether the Client should print to Stderr
+	// information about messages sent and received. Used mostly
+	// for debugging.
+	Trace bool
+
+	// HTTPClient is used to set a custom HTTP client to be used
+	// by the Client.
 	HTTPClient *http.Client
 }
 
+// Dial connects to an Urbit ship via HTTP address using code to
+// authenticate. Returns a Client that can be used to perform further
+// Requests.
 func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 	c := &Client{
 		addr: addr,
@@ -145,7 +157,7 @@ func (c *Client) openStream() (io.ReadCloser, error) {
 	//
 	// TODO: Make PR to Urbit for autocreation of the Eyre channel
 	// on GET request.
-	r := c.Hi(c.name, "hello from Go")
+	r := c.hi(c.name, "hello from Go")
 	if r.Err != nil {
 		return nil, fmt.Errorf("couldn't say Hi to ship: %w", r.Err)
 	}
@@ -168,6 +180,8 @@ func (c *Client) openStream() (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
+// Get makes an HTTP GET request to the path inside the ship with a
+// certain Content-Type.
 func (c *Client) Get(path, contentType string) ([]byte, error) {
 	// TODO: Consider a streaming version that returns an
 	// io.ReadCloser.
@@ -198,16 +212,22 @@ func (c *Client) Get(path, contentType string) ([]byte, error) {
 	return ioutil.ReadAll(resp.Body)
 }
 
+// GetJSON makes an HTTP GET request to the path inside the ship with
+// Content-Type set to "application/json".
 func (c *Client) GetJSON(path string) ([]byte, error) {
 	return c.Get(path, "application/json")
 }
 
+// Scry makes a query to the ship state. Note that not all state
+// "scry-able" via the ship is exported via HTTP.
 func (c *Client) Scry(app, path string) ([]byte, error) {
 	return c.GetJSON("/~/scry/" + app + path + ".json")
 }
 
-// TODO: Consider making this an interface and let user type-switch
+// TODO: Consider making Event an interface and let user type-switch
 // instead of switching on the Type string.
+
+// Event represents an update sent from the ship to the Client.
 type Event struct {
 	ID   uint64
 	Type string `json:"response"`
@@ -218,11 +238,19 @@ type Event struct {
 	Data json.RawMessage `json:"json"`
 }
 
+// Events returns the channel used to obtain events coming from the ship.
+//
+// The library doesn't buffer individual events coming from the ship,
+// so it is important that the user code consume this channel, to make
+// sure progress is made in all the different requests.
 func (c *Client) Events() <-chan *Event {
 	return c.events
 }
 
 const (
+	// Special Type of Event used by Client to emit information
+	// that doesn't come from the ship, e.g. errors Client had
+	// processing data.
 	ClientError = "go-client-error"
 )
 
@@ -396,8 +424,10 @@ const (
 	ActionUnsubscribe = "unsubscribe"
 )
 
-// TODO: For now this is essentially an union of the valid request
-// fields. Should we make this an interface?
+// Request represents a request made from a client to a ship.
+//
+// It is an "union" of the valid fields for all Action values, so some
+// fields might be ignored, see inline comments below.
 type Request struct {
 	Action string `json:"action"`
 
@@ -423,14 +453,31 @@ type Request struct {
 // TODO: Should we allow a private id to be assigned (so we can have
 // it before blocking)?  See also overrideID.
 
+// Result is obtained after sending a request.
 type Result struct {
-	ID       uint64
-	Err      error
+	// ID assigned to the request. Can be used to find associated
+	// events when consuming the Events channel.
+	ID uint64
+
+	// Err is not nil if the request resulted in an Error. Note
+	// that even if the Request is succesfully sent, it is still
+	// possible that Err become non-nil later. See also Wait.
+	Err error
+
+	// Requests with a single response will have a channel so can
+	// be waited on with the final result. See also Wait.
 	Response <-chan error
 }
 
 // TODO: Add comment about the need for the client process events in a
 // different goroutine when using Wait.
+
+// If the Result has an associated channel (e.g. it is a Result of a
+// "poke"), blocks until a response is available.  The response will
+// be returned and also stored in Err.
+//
+// For this method to work, another goroutine must be consuming Events
+// channel.
 func (res *Result) Wait() error {
 	if res.Response != nil {
 		res.Err = <-res.Response
@@ -439,6 +486,7 @@ func (res *Result) Wait() error {
 	return res.Err
 }
 
+// Poke sends a "poke" request to the ship Client is connected to.
 func (c *Client) Poke(app string, data json.RawMessage) Result {
 	req := &Request{
 		Action: ActionPoke,
@@ -450,6 +498,7 @@ func (c *Client) Poke(app string, data json.RawMessage) Result {
 	return c.Do(req)
 }
 
+// PokeShip sends a "poke" request to a given ship.
 func (c *Client) PokeShip(ship, app string, data json.RawMessage) Result {
 	req := &Request{
 		Action: ActionPoke,
@@ -467,10 +516,13 @@ func (c *Client) getNextID() uint64 {
 	return atomic.AddUint64(&c.nextID, 1)
 }
 
+// Do sends a single request to the ship and returns a result.
 func (c *Client) Do(req *Request) Result {
 	return c.DoMany([]*Request{req})[0]
 }
 
+// DoMany combines multiple requests into a single HTTP request and
+// send to the ship. Returns a Result for each request.
 func (c *Client) DoMany(reqs []*Request) []Result {
 	results := make([]Result, len(reqs))
 
@@ -650,7 +702,7 @@ func (c *Client) putJSON(body io.Reader) error {
 	return nil
 }
 
-func (c *Client) Hi(ship, message string) Result {
+func (c *Client) hi(ship, message string) Result {
 	req := &Request{
 		Action: ActionPoke,
 		Ship:   ship,
@@ -661,6 +713,9 @@ func (c *Client) Hi(ship, message string) Result {
 	return c.Do(req)
 }
 
+// Subscribe to a given path of an app in the ship Client is connected
+// to. If subscription succeeds, the ship will send (likely multiple)
+// "diff" events containing updates.
 func (c *Client) Subscribe(app, path string) Result {
 	req := &Request{
 		Action: ActionSubscribe,
@@ -671,6 +726,9 @@ func (c *Client) Subscribe(app, path string) Result {
 	return c.Do(req)
 }
 
+// Subscribe to a given path of an app in the given ship. If
+// subscription succeeds, the ship will send (likely multiple) "diff"
+// events containing updates.
 func (c *Client) SubscribeShip(ship, app, path string) Result {
 	req := &Request{
 		Action: ActionSubscribe,
@@ -681,6 +739,7 @@ func (c *Client) SubscribeShip(ship, app, path string) Result {
 	return c.Do(req)
 }
 
+// Unsubscribe finishes a subscription.
 func (c *Client) Unsubscribe(subscriptionID uint64) Result {
 	req := &Request{
 		Action:       ActionUnsubscribe,
@@ -689,6 +748,7 @@ func (c *Client) Unsubscribe(subscriptionID uint64) Result {
 	return c.Do(req)
 }
 
+// Close the connection with the ship.
 func (c *Client) Close() error {
 	var err error
 
