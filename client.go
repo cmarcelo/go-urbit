@@ -208,16 +208,12 @@ const (
 	ClientError = "go-client-error"
 )
 
-func (c *Client) dispatchError(e error) {
+func (c *Client) dispatchError(e error, data []byte) {
 	msg := e.Error()
 	c.events <- &Event{
 		Type: ClientError,
 		Err:  &msg,
-
-		// sseReader will reuse internal buffers, so copy the
-		// buffer contents when creating the error event before
-		// continuing to process the input.
-		Data: append([]byte(nil), c.sse.Data...),
+		Data: data,
 	}
 }
 
@@ -233,8 +229,14 @@ func (c *Client) processEvents() {
 		var ev Event
 		err := json.Unmarshal(c.sse.Data, &ev)
 
+		// TODO: Move this comment.
+
+		// sseReader will reuse internal buffers, so copy the
+		// buffer contents when creating the error event before
+		// continuing to process the input.
+
 		if err != nil {
-			c.dispatchError(err)
+			c.dispatchError(err, append([]byte(nil), c.sse.Data...))
 			continue
 		}
 
@@ -261,7 +263,7 @@ func (c *Client) processEvents() {
 			c.mu.Unlock()
 
 			if !exists {
-				c.dispatchError(fmt.Errorf("response for unknown request with action=%s id=%s", ev.Type, string(c.sse.LastEventID)))
+				c.dispatchError(fmt.Errorf("response for unknown request with action=%s id=%s", ev.Type, string(c.sse.LastEventID)), append([]byte(nil), c.sse.Data...))
 				continue
 			}
 
@@ -284,7 +286,7 @@ func (c *Client) processEvents() {
 			// backoff mechanism.
 
 		default:
-			c.dispatchError(fmt.Errorf("unknown response=%s for id=%d", ev.Type, ev.ID))
+			c.dispatchError(fmt.Errorf("unknown response=%s for id=%d", ev.Type, ev.ID), append([]byte(nil), c.sse.Data...))
 		}
 
 		c.events <- &ev
@@ -505,7 +507,7 @@ func (c *Client) ack(eventID []byte) {
 
 	err := c.putJSON(buf)
 	if err != nil {
-		c.dispatchError(fmt.Errorf("failure to send ack for event-id=%s: %w", string(eventID), err))
+		c.dispatchError(fmt.Errorf("failure to send ack for event-id=%s: %w", string(eventID), err), nil)
 		return
 	}
 }
