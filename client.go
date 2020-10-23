@@ -41,11 +41,16 @@ type Client struct {
 	ackerCh   chan []byte
 	ackerDone chan struct{}
 
-	mu      sync.Mutex
-	pending map[uint64]chan error
+	mu            sync.Mutex
+	pending       map[uint64]chan error
+	subscriptions map[uint64]subscription
 
 	closeOnce sync.Once
 	close     chan struct{}
+}
+
+type subscription struct {
+	ship, app, path string
 }
 
 func (c *Client) Name() string {
@@ -68,7 +73,8 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 		ackerCh:   make(chan []byte),
 		ackerDone: make(chan struct{}),
 
-		pending: make(map[uint64]chan error),
+		pending:       make(map[uint64]chan error),
+		subscriptions: make(map[uint64]subscription),
 
 		close: make(chan struct{}, 1),
 	}
@@ -468,6 +474,17 @@ func (c *Client) DoMany(reqs []*Request) []Result {
 
 			c.mu.Lock()
 			c.pending[id] = ch
+			c.mu.Unlock()
+		}
+
+		switch req.Action {
+		case ActionSubscribe:
+			c.mu.Lock()
+			c.subscriptions[id] = subscription{req.Ship, req.App, req.Path}
+			c.mu.Unlock()
+		case ActionUnsubscribe:
+			c.mu.Lock()
+			delete(c.subscriptions, id)
 			c.mu.Unlock()
 		}
 
