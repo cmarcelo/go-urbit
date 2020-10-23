@@ -200,6 +200,8 @@ func (c *Client) Scry(app, path string) ([]byte, error) {
 	return c.GetJSON("/~/scry/" + app + path + ".json")
 }
 
+// TODO: Consider making this an interface and let user type-switch
+// instead of switching on the Type string.
 type Event struct {
 	ID   uint64
 	Type string `json:"response"`
