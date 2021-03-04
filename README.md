@@ -1,6 +1,6 @@
 # Urbit HTTP API implementation in Go
 
-[![PkgGoDev](https://pkg.go.dev/badge/github.com/cmarcelo/go-urbit)](https://pkg.go.dev/github.com/cmarcelo/go-urbit)
+[![PkgGoDev](https://pkg.go.dev/badge/github.com/cmarcelo/go-urbit)](https://pkg.go.dev/github.com/cmarcelo/go-urbit) [![awesome urbit badge](https://img.shields.io/badge/~-awesome%20urbit-lightgrey)](https://github.com/urbit/awesome-urbit)
 
 This module provides functionality to communicate with Urbit
 ships. See [Urbit home page](https://urbit.org) for more details about
