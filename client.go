@@ -119,7 +119,7 @@ func Dial(addr, code string, opts *DialOptions) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("couldn't find ship name: %w", err)
 	}
-	parts := strings.SplitN(string(snippet), "'", 3)
+	parts := strings.SplitN(string(snippet), `"`, 3)
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("couldn't find ship name in: %q", string(snippet))
 	}
