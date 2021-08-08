@@ -1,4 +1,4 @@
-module github.com/cmarcelo/go-urbit
+module github.com/hosted-fornet/go-urbit
 
 go 1.15
 
